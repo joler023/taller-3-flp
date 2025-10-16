@@ -1,21 +1,36 @@
 #lang eopl
 
 ;===============================================================================
-; PARTE 1: DEFINICIÓN DEL LENGUAJE Y SU GRAMÁTICA
+; PUNTO 1: DEFINICIÓN DEL LENGUAJE Y SU GRAMÁTICA
 ;===============================================================================
 
 (define-datatype valor-denotado valor-denotado?
   (numero-val (num number?))
   (texto-val (txt string?))
   (booleano-val (bool boolean?))
-  (proc-val (proc procedure?)))
+  (proc-val (proc proc?)))
+
+(define-datatype proc proc?
+  (cerradura
+   (ids (list-of symbol?))
+   (cuerpo expresion?)
+   (env ambiente?)))
 
 (define-datatype expresion expresion?
   (numero-lit (num number?))
   (texto-lit (txt string?))
   (var-exp (id symbol?))
   (primapp-bin-exp (exp1 expresion?) (prim-binaria symbol?) (exp2 expresion?))
-  (primapp-un-exp (prim-unaria symbol?) (exp expresion?)))
+  (primapp-un-exp (prim-unaria symbol?) (exp expresion?))
+  (condicional-exp (test-exp expresion?) (true-exp expresion?) (false-exp expresion?))
+  (variableLocal-exp (ids (list-of symbol?)) (exps (list-of expresion?)) (cuerpo expresion?))
+  (procedimiento-exp (ids (list-of symbol?)) (cuerpo expresion?))
+  (app-exp (rator expresion?) (rands (list-of expresion?)))
+  (letrec-exp
+   (proc-nombres (list-of symbol?))
+   (proc-parametros (list-of (list-of symbol?)))
+   (proc-cuerpos (list-of expresion?))
+   (letrec-cuerpo expresion?)))
 
 (define evaluar-expresion
   (lambda (exp env)
@@ -29,7 +44,44 @@
          (aplicar-primitiva-binaria prim val1 val2)))
       (primapp-un-exp (prim exp)
        (let ((val (evaluar-expresion exp env)))
-         (aplicar-primitiva-unaria prim val))))))
+         (aplicar-primitiva-unaria prim val)))
+      
+      ;=========================================================================
+      ; CASO CONDICIONAL
+      ;=========================================================================
+      (condicional-exp (test-exp true-exp false-exp)
+        (let ((test-val (evaluar-expresion test-exp env)))
+          (if (valor-verdad? test-val)
+              (evaluar-expresion true-exp env)
+              (evaluar-expresion false-exp env))))
+      
+      ;=========================================================================
+      ; CASO VARIABLES LOCALES
+      ;=========================================================================
+      (variableLocal-exp (ids exps cuerpo)
+        (let ((vals (map (lambda (e) (evaluar-expresion e env)) exps)))
+          (let ((nuevo-env (extender-ambiente ids vals env)))
+            (evaluar-expresion cuerpo nuevo-env))))
+      ;=========================================================================
+      ; CASO PROCEDIMIENTO
+      ;=========================================================================
+      (procedimiento-exp (ids cuerpo)
+        (proc-val (cerradura ids cuerpo env)))
+
+      (app-exp (rator rands)
+        (let ([procedimiento (evaluar-expresion rator env)]
+              [argumentos (map (lambda (arg) (evaluar-expresion arg env)) rands)])
+          (cases valor-denotado procedimiento
+            (proc-val (proc)
+              (aplicar-procedimiento proc argumentos))
+            (else (eopl:error 'evaluar-expresion "Error: Se intentó llamar a algo que no es un procedimiento: ~s" procedimiento)))))
+      ;=========================================================================
+      ; CASO RECURSION
+      ;=========================================================================
+      (letrec-exp (proc-nombres p-parametros p-cuerpos letrec-cuerpo)
+        (evaluar-expresion
+         letrec-cuerpo
+         (extender-ambiente-recursivamente proc-nombres p-parametros p-cuerpos env))) )))
 
 ; --- Aplicación de Primitivas ---
 (define aplicar-primitiva-binaria
@@ -68,6 +120,15 @@
             (eopl:error 'aplicar-primitiva-unaria "Operador no válido para textos: ~s" prim)))
       (else (eopl:error 'aplicar-primitiva-unaria "Tipo no soportado para operaciones unarias: ~s" val)))))
 
+
+; --- Aplicación de Procedimiento ---
+(define aplicar-procedimiento
+  (lambda (un-proc args)
+    (cases proc un-proc
+      (cerradura (ids cuerpo env-guardado)
+        (let ((nuevo-env (extender-ambiente ids args env-guardado)))
+          (evaluar-expresion cuerpo nuevo-env))))))
+
 ;===============================================================================
 ; PUNTO 2: GESTIÓN DEL AMBIENTE
 ;===============================================================================
@@ -79,14 +140,58 @@
         (cons '@d (texto-val "hola"))
         (cons '@e (texto-val "FLP"))))
 
+(define ambiente?
+  (lambda (x)
+    (list? x)))
+
 (define buscar-variable
   (lambda (id env)
     (if (null? env)
         (eopl:error 'buscar-variable "La variable no ha sido definida: ~s" id)
-        (let ((primer-par (car env)))
-          (if (eqv? (car primer-par) id)
-              (cdr primer-par)
-              (buscar-variable id (cdr env)))))))
+        (let ((primer-elemento (car env)))
+          (if (eqv? (car primer-elemento) 'rec-ambiente)
+            
+              (let* ((nombres (cadr primer-elemento))
+                     (parametros (caddr primer-elemento))
+                     (cuerpos (cadddr primer-elemento))
+                     (pos (list-find-position id nombres)))
+                (if pos
+              
+                    (proc-val
+                     (cerradura
+                      (list-ref parametros pos)
+                      (list-ref cuerpos pos)
+                      env))
+                    (buscar-variable id (cdr env))))
+           
+              (let ((par primer-elemento))
+                (if (eqv? (car par) id)
+                    (cdr par)
+                    (buscar-variable id (cdr env)))))))))
+
+(define extender-ambiente-recursivamente
+  (lambda (proc-nombres p-parametros p-cuerpos env)
+    (cons (list 'rec-ambiente proc-nombres p-parametros p-cuerpos) env)))
+
+;===============================================================================
+; FUNCIONES AUXILIARES
+;===============================================================================
+(define extender-ambiente
+  (lambda (ids vals env)
+    (if (null? ids)
+        env
+        (extender-ambiente 
+         (cdr ids) 
+         (cdr vals)
+         (cons (cons (car ids) (car vals)) env)))))
+
+(define list-find-position
+  (lambda (elem lst)
+    (cond
+      ((null? lst) #f)
+      ((eqv? elem (car lst)) 0)
+      (else (let ((res (list-find-position elem (cdr lst))))
+              (if res (+ 1 res) #f))))))
 
 ;===============================================================================
 ; PUNTO 3: IMPLEMENTACIÓN DE LÓGICA BOOLEANA
@@ -121,3 +226,99 @@
 (eopl:printf "~s\n" (valor-verdad? (numero-val 5)))
 (eopl:printf "~s\n" (valor-verdad? (numero-val 0)))
 (eopl:printf "~s\n" (valor-verdad? (numero-val -1)))
+
+(eopl:printf "\n========================================\n")
+(eopl:printf "pruebas condicionales \n")
+(eopl:printf "========================================\n\n")
+
+; Prueba 1: Si (2+3) entonces 2 sino 3 finSI → Esperado: 2
+(eopl:printf "1. Si (2+3) entonces 2 sino 3 finSI\n")
+(eopl:printf "   Resultado: ~s\n" 
+  (run (condicional-exp 
+         (primapp-bin-exp (numero-lit 2) '+ (numero-lit 4))
+         (numero-lit 2)
+         (numero-lit 3))))
+
+; Prueba 2: Si (longitud(@d) ~ 4) entonces 2 sino 3 finSI → Esperado: 3
+(eopl:printf "\n2. Si (longitud(@d) ~ 4) entonces 2 sino 3 finSI\n")
+(eopl:printf "   Resultado: ~s\n"
+  (run (condicional-exp
+         (primapp-bin-exp
+           (primapp-un-exp 'longitud (var-exp '@d))
+           '~
+           (numero-lit 4))
+         (numero-lit 2)
+         (numero-lit 3))))
+
+(eopl:printf "\n========================================\n")
+(eopl:printf "pruebas variables locales \n")
+(eopl:printf "========================================\n\n")
+
+; Prueba 1: declarar (@x=2;@y=3;@a=7) { (@a+(@x~@y)) } → Esperado: 6
+(eopl:printf "1. declarar (@x=2;@y=3;@a=7) { (@a+(@x~~@y)) }\n")
+(eopl:printf "   Resultado: ~s\n"
+  (run (variableLocal-exp
+         '(@x @y @a)
+         (list (numero-lit 2) (numero-lit 3) (numero-lit 7))
+         (primapp-bin-exp
+           (var-exp '@a)
+           '+
+           (primapp-bin-exp (var-exp '@x) '~ (var-exp '@y))))))
+
+; Prueba 2: declarar (@x=2;@y=3;@a=7) { (@a+@b) } → Esperado: 9
+(eopl:printf "\n2. declarar (@x=2;@y=3;@a=7) { (@a+@b) }\n")
+(eopl:printf "   Resultado: ~s\n"
+  (run (variableLocal-exp
+         '(@x @y @a)
+         (list (numero-lit 2) (numero-lit 3) (numero-lit 7))
+         (primapp-bin-exp (var-exp '@a) '+ (var-exp '@b)))))
+
+;===============================================================================
+; PRUEBAS PARA RECURSIÓN 
+;===============================================================================
+
+(eopl:printf "\n========================================\n")
+(eopl:printf "Pruebas de Recursión (Factorial)\n")
+(eopl:printf "========================================\n\n")
+
+;; Prueba 1: Calcular el factorial de 5. Esperado: 120
+(eopl:printf "1. Factorial de 5\n")
+(eopl:printf "   Resultado: ~s\n"
+  (run
+   (letrec-exp
+    '(@factorial) ; Argumento 1: Lista de nombres de procedimientos
+    '((@n))      ; Argumento 2: Lista de listas de parámetros
+    (list        ; Argumento 3: Lista de cuerpos
+     (condicional-exp
+      (var-exp '@n)
+      (primapp-bin-exp
+       (var-exp '@n)
+       '*
+       (app-exp
+        (var-exp '@factorial)
+        (list (primapp-bin-exp (var-exp '@n) '~ (numero-lit 1)))))
+      (numero-lit 1)))
+    (app-exp
+     (var-exp '@factorial)
+     (list (numero-lit 5))))))
+
+;; Prueba 2: Calcular el factorial de 1 (caso base). Esperado: 1
+(eopl:printf "\n2. Factorial de 1\n")
+(eopl:printf "   Resultado: ~s\n"
+  (run
+   (letrec-exp
+    '(@factorial)
+    '((@n))
+    (list
+     (condicional-exp
+      (var-exp '@n)
+      (primapp-bin-exp
+       (var-exp '@n)
+       '*
+       (app-exp
+        (var-exp '@factorial)
+        (list (primapp-bin-exp (var-exp '@n) '~ (numero-lit 1)))))
+      (numero-lit 1)))
+    (app-exp
+     (var-exp '@factorial)
+     (list (numero-lit 1))))))
