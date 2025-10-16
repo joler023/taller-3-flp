@@ -134,7 +134,9 @@
 ;===============================================================================
 
 (define ambiente-inicial
-  (list (cons '@a (numero-val 1))
+  (list 
+        (cons '@pi (numero-val 3.14159))
+        (cons '@a (numero-val 1))
         (cons '@b (numero-val 2))
         (cons '@c (numero-val 3))
         (cons '@d (texto-val "hola"))
@@ -322,3 +324,96 @@
     (app-exp
      (var-exp '@factorial)
      (list (numero-lit 1))))))
+
+;===============================================================================
+; PRUEBA DEL ÁREA DE UN CÍRCULO
+;===============================================================================
+
+(eopl:printf "\n========================================\n")
+(eopl:printf "Prueba de Procedimiento: Área de un Círculo\n")
+(eopl:printf "========================================\n\n")
+
+(eopl:printf "Cálculo del área para un radio de 2.5\n")
+(eopl:printf "   Resultado: ~s\n"
+  (run
+    (variableLocal-exp
+      '(@radio @areaCirculo)
+      (list
+        (numero-lit 2.5)
+        (procedimiento-exp
+          '(@r)
+          (primapp-bin-exp
+            (var-exp '@pi)
+            '*
+            (primapp-bin-exp (var-exp '@r) '* (var-exp '@r)))))
+      (app-exp
+        (var-exp '@areaCirculo)
+        (list (var-exp '@radio))))))
+
+;===============================================================================
+; PRUEBA DE RESTA Y MULTIPLICACIÓN SOLO CON ADD1 y SUB1
+;===============================================================================
+
+(eopl:printf "\n========================================\n")
+(eopl:printf "9.d) Resta y Multiplicación con Primitivas Mínimas\n")
+(eopl:printf "========================================\n\n")
+
+(eopl:printf "Cálculo de la resta recursiva para (10, 3):\n")
+(eopl:printf "   Resultado: ~s\n"
+  (run
+    ; Se define @restar de forma recursiva.
+    (letrec-exp
+      '(@restar) ; Nombre del procedimiento
+      '((@a @b))  ; Parámetros que recibe
+      (list
+        ; Cuerpo del procedimiento @restar
+        (condicional-exp
+          (var-exp '@b) ; Condición: si @b no es cero
+          ; Paso Recursivo: llamar a restar(sub1(a), sub1(b))
+          (app-exp
+            (var-exp '@restar)
+            (list
+              (primapp-un-exp 'sub1 (var-exp '@a))
+              (primapp-un-exp 'sub1 (var-exp '@b)) ; <-- LÍNEA CORREGIDA
+              ))
+          ; Caso Base: si @b es cero, el resultado es @a
+          (var-exp '@a)))
+      ; Llamada: evaluar @restar (10, 3) finEval
+      (app-exp (var-exp '@restar) (list (numero-lit 10) (numero-lit 3))))))
+
+(eopl:printf "\nCálculo de la multiplicación recursiva para (10, 3):\n")
+(eopl:printf "   Resultado: ~s\n"
+  (run
+    ; Se definen @sumar y @multiplicar juntas, ya que la segunda depende de la primera.
+    (letrec-exp
+      '(@sumar @multiplicar) ; Nombres de los procedimientos
+      '((@x @y) (@a @b))     ; Lista de parámetros para cada uno
+      (list
+        ; ---- Cuerpo del procedimiento @sumar(@x, @y) ----
+        (condicional-exp
+          (var-exp '@y) ; Condición: si @y no es cero
+          ; Paso recursivo: llamar a sumar(add1(x), sub1(y))
+          (app-exp
+            (var-exp '@sumar)
+            (list
+              (primapp-un-exp 'add1 (var-exp '@x))
+              (primapp-un-exp 'sub1 (var-exp '@y))))
+          ; Caso base: si @y es cero, el resultado es @x
+          (var-exp '@x))
+
+        ; ---- Cuerpo del procedimiento @multiplicar(@a, @b) ----
+        (condicional-exp
+          (var-exp '@b) ; Condición: si @b no es cero
+          ; Paso recursivo: llamar a sumar(a, multiplicar(a, sub1(b)))
+          (app-exp
+            (var-exp '@sumar) ; Usamos nuestra suma, no la primitiva '+'
+            (list
+              (var-exp '@a)
+              (app-exp
+               (var-exp '@multiplicar)
+               (list (var-exp '@a) (primapp-un-exp 'sub1 (var-exp '@b))))))
+          ; Caso base: si @b es cero, el resultado es 0
+          (numero-lit 0)))
+
+      ; Llamada: evaluar @multiplicar (10, 3) finEval
+      (app-exp (var-exp '@multiplicar) (list (numero-lit 10) (numero-lit 3))))))
