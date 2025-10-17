@@ -32,6 +32,8 @@
    (proc-cuerpos (list-of expresion?))
    (letrec-cuerpo expresion?)))
 
+
+
 (define evaluar-expresion
   (lambda (exp env)
     (cases expresion exp
@@ -355,7 +357,7 @@
 ;===============================================================================
 
 (eopl:printf "\n========================================\n")
-(eopl:printf "9.d) Resta y Multiplicación con Primitivas Mínimas\n")
+(eopl:printf "9.d) Resta y multiplicación con primitivas mínimas\n")
 (eopl:printf "========================================\n\n")
 
 (eopl:printf "Cálculo de la resta recursiva para (10, 3):\n")
@@ -374,7 +376,7 @@
             (var-exp '@restar)
             (list
               (primapp-un-exp 'sub1 (var-exp '@a))
-              (primapp-un-exp 'sub1 (var-exp '@b)) ; <-- LÍNEA CORREGIDA
+              (primapp-un-exp 'sub1 (var-exp '@b)) 
               ))
           ; Caso Base: si @b es cero, el resultado es @a
           (var-exp '@a)))
@@ -417,3 +419,66 @@
 
       ; Llamada: evaluar @multiplicar (10, 3) finEval
       (app-exp (var-exp '@multiplicar) (list (numero-lit 10) (numero-lit 3))))))
+
+;===============================================================================
+; DECORADOR SIMPLE
+;===============================================================================
+(eopl:printf "\n========================================\n")
+(eopl:printf "e) Prueba decorador simple\n")
+(eopl:printf "========================================\n\n")
+
+(eopl:printf "Resultado: ~s\n"
+  (run
+   ;; Anidamos los 'declarar' para asegurar el orden de definición
+   (variableLocal-exp ; declarar @integrantes = ...
+    '(@integrantes)
+    (list (procedimiento-exp '() (texto-lit "Joel-Allan-Manuel")))
+    (variableLocal-exp ; { declarar @saludar = ...
+     '(@saludar)
+     (list
+      (procedimiento-exp
+       '(@func)
+       (procedimiento-exp
+        '()
+        (primapp-bin-exp
+         (texto-lit "Hola:")
+         'concat
+         (app-exp (var-exp '@func) '())))))
+     (variableLocal-exp ; { declarar @decorate = ...
+      '(@decorate)
+      (list (app-exp (var-exp '@saludar) (list (var-exp '@integrantes))))
+      ;; { evaluar @decorate () }
+      (app-exp (var-exp '@decorate) '()))))))
+
+;===============================================================================
+; DECORADOR CON PARÁMETROS
+;===============================================================================
+(eopl:printf "\n========================================\n")
+(eopl:printf "f) Prueba del decorador con parámetros\n")
+(eopl:printf "========================================\n\n")
+
+(eopl:printf "Resultado: ~s\n"
+  (run
+   (variableLocal-exp
+    '(@integrantes)
+    (list (procedimiento-exp '() (texto-lit "Manuel-Joel-Allan")))
+    (variableLocal-exp
+     '(@saludar)
+     (list
+      (procedimiento-exp
+       '(@func)
+       (procedimiento-exp
+        '(@sufijo)
+        (primapp-bin-exp
+         (primapp-bin-exp
+          (texto-lit "Hola:")
+          'concat
+          (app-exp (var-exp '@func) '()))
+         'concat
+         (var-exp '@sufijo)))))
+     (variableLocal-exp
+      '(@decorate)
+      (list (app-exp (var-exp '@saludar) (list (var-exp '@integrantes))))
+      (app-exp
+       (var-exp '@decorate)
+       (list (texto-lit "-ProfesoresFLP"))))))))
