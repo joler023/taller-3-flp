@@ -32,8 +32,6 @@
    (proc-cuerpos (list-of expresion?))
    (letrec-cuerpo expresion?)))
 
-
-
 (define evaluar-expresion
   (lambda (exp env)
     (cases expresion exp
@@ -61,9 +59,14 @@
       ; CASO VARIABLES LOCALES
       ;=========================================================================
       (variableLocal-exp (ids exps cuerpo)
-        (let ((vals (map (lambda (e) (evaluar-expresion e env)) exps)))
-          (let ((nuevo-env (extender-ambiente ids vals env)))
-            (evaluar-expresion cuerpo nuevo-env))))
+          (if (null? ids)
+            (evaluar-expresion cuerpo env)
+            (let ((val1 (evaluar-expresion (car exps) env)))
+             (let ((nuevo-env (extender-ambiente (list (car ids)) (list val1) env)))
+              (evaluar-expresion
+               (variableLocal-exp (cdr ids) (cdr exps) cuerpo)
+                nuevo-env)))))
+      
       ;=========================================================================
       ; CASO PROCEDIMIENTO
       ;=========================================================================
@@ -77,6 +80,7 @@
             (proc-val (proc)
               (aplicar-procedimiento proc argumentos))
             (else (eopl:error 'evaluar-expresion "Error: Se intentó llamar a algo que no es un procedimiento: ~s" procedimiento)))))
+      
       ;=========================================================================
       ; CASO RECURSION
       ;=========================================================================
@@ -209,276 +213,302 @@
        (eopl:error 'valor-verdad? "Se esperaba un valor numérico, pero se recibió: ~s" valor)))))
 
 ;===============================================================================
-; PRUEBAS
+; PARSER
+;===============================================================================
+
+; --- Funciones auxiliares para el parser ---
+(define es-primitiva-binaria?
+  (lambda (op)
+    (memv op '(+ ~ / * concat))))
+
+(define es-primitiva-unaria?
+  (lambda (op)
+    (memv op '(longitud add1 sub1))))
+
+(define sublist
+  (lambda (ls start end)
+    (cond
+      ((>= start end) '())
+      (else (cons (list-ref ls start) (sublist ls (+ start 1) end))))))
+
+(define parse-expression
+  (lambda (datum)
+    (cond
+      ;; ---------------------------------------
+      ;; Literales y variables
+      ;; ---------------------------------------
+      ((number? datum) (numero-lit datum))
+      ((string? datum) (texto-lit datum))
+      ((symbol? datum) (var-exp datum))
+
+      ;; ---------------------------------------
+      ;; Expresiones compuestas (listas)
+      ;; ---------------------------------------
+      ((pair? datum)
+       (let ((head (car datum)))
+         (cond
+           ;; -----------------------
+           ;; Condicional
+           ;; -----------------------
+           ((eqv? head 'Si)
+            (if (and (= (length datum) 7)
+                     (eqv? (list-ref datum 2) 'entonces)
+                     (eqv? (list-ref datum 4) 'sino)
+                     (eqv? (list-ref datum 6) 'finSI))
+                (condicional-exp
+                 (parse-expression (cadr datum))
+                 (parse-expression (list-ref datum 3))
+                 (parse-expression (list-ref datum 5)))
+                (eopl:error 'parse-expression "Condicional 'Si' mal formado: ~s" datum)))
+
+           ;; -----------------------
+           ;; Declarar variables locales
+           ;; -----------------------
+           ((eqv? head 'declarar)
+            (let ((bindings (cadr datum))
+                  (body (caddr datum)))
+              (variableLocal-exp
+               (map car bindings)                        ; nombres de variables
+               (map (lambda (b) (parse-expression (caddr b))) bindings) ; valores iniciales
+               (parse-expression body))))
+
+           ;; -----------------------
+           ;; Procedimiento
+           ;; -----------------------
+           ((eqv? head 'procedimiento)
+            (if (and (= (length datum) 5)
+                     (eqv? (list-ref datum 2) 'haga)
+                     (eqv? (list-ref datum 4) 'finProc))
+                (procedimiento-exp
+                 (cadr datum)                  ; lista de parámetros
+                 (parse-expression (caddr (cdr datum)))) ; cuerpo
+                (eopl:error 'parse-expression "Procedimiento mal formado: ~s" datum)))
+
+           ;; -----------------------
+           ;; Evaluar aplicación de procedimiento
+           ;; -----------------------
+           ((eqv? head 'evaluar)
+            (let ((len (length datum)))
+              (if (and (> len 2)
+                       (eqv? (list-ref datum (- len 1)) 'finEval))
+                  (app-exp
+                   (parse-expression (cadr datum))
+                   (map parse-expression (sublist datum 2 (- len 1))))
+                  (eopl:error 'parse-expression "'evaluar' mal formado: ~s" datum))))
+
+           ;; -----------------------
+           ;; Letrec
+           ;; -----------------------
+          ((eqv? head 'letrec)
+           (let ((bindings (cadr datum))
+                 (letrec-body (caddr datum)))
+             (let ((proc-nombres (map car bindings))
+                   (proc-parametros (map cadr bindings))
+        
+                   (proc-cuerpos (map (lambda (b)
+                                        ; Corregido para tomar el 4to elemento como cuerpo
+                                        (parse-expression (list-ref b 3)))
+                                      bindings)))
+               (letrec-exp proc-nombres proc-parametros proc-cuerpos
+                           (parse-expression letrec-body)))))
+
+           ;; -----------------------
+           ;; Primitivas unarias
+           ;; -----------------------
+           ((es-primitiva-unaria? head)
+            (if (= (length datum) 2)
+                (primapp-un-exp head (parse-expression (cadr datum)))
+                (eopl:error 'parse-expression "Operación unaria mal formada: ~s" datum)))
+
+           ;; -----------------------
+           ;; Primitivas binarias
+           ;; -----------------------
+           ((and (= (length datum) 3) (es-primitiva-binaria? (cadr datum)))
+            (primapp-bin-exp
+             (parse-expression (car datum))
+             (cadr datum)
+             (parse-expression (caddr datum))))
+
+           ;; -----------------------
+           ;; Caso no reconocido
+           ;; -----------------------
+           (else (eopl:error 'parse-expression "Expresión de lista no reconocida: ~s" datum)))))
+
+      ;; ---------------------------------------
+      ;; Sintaxis no válida
+      ;; ---------------------------------------
+      (else (eopl:error 'parse-expression "Sintaxis inválida: ~s" datum)))))
+
+;===============================================================================
+; PRUEBAS (UTILIZANDO EL PARSER)
 ;===============================================================================
 (define run
-  (lambda (exp)
-    (evaluar-expresion exp ambiente-inicial)))
+  (lambda (expresion-concreta)
+    (let ((expresion-abstracta (parse-expression expresion-concreta)))
+      (evaluar-expresion expresion-abstracta ambiente-inicial))))
 
-(eopl:printf "--- Pruebas de Búsqueda de Variables ---\n")
-(eopl:printf "~s\n" (run (var-exp '@a)))
-(eopl:printf "~s\n" (run (var-exp '@b)))
-(eopl:printf "~s\n" (run (var-exp '@e)))
+;;========================================
+;; Pruebas de búsqueda de variables
+;;========================================
+(eopl:printf "--- Pruebas de búsqueda de variables ---\n")
+(eopl:printf "~s\n" (run '@a))
+(eopl:printf "~s\n" (run '@b))
+(eopl:printf "~s\n" (run '@e))
 
-(eopl:printf "\n--- Pruebas de Operaciones ---\n")
-(eopl:printf "~s\n" (run (primapp-bin-exp (var-exp '@a) '+ (var-exp '@b))))
-(eopl:printf "~s\n" (run (primapp-bin-exp (var-exp '@d) 'concat (var-exp '@e))))
-(eopl:printf "~s\n" (run (primapp-un-exp 'longitud (var-exp '@d))))
-(eopl:printf "~s\n" (run (primapp-un-exp 'add1 (var-exp '@c))))
+;;========================================
+;; Pruebas de operaciones
+;;========================================
+(eopl:printf "\n--- Pruebas de operaciones ---\n")
+(eopl:printf "~s\n" (run '(@a + @b)))
+(eopl:printf "~s\n" (run '(@d concat @e)))
+(eopl:printf "~s\n" (run '(longitud @d)))
+(eopl:printf "~s\n" (run '(add1 @c)))
 
-(eopl:printf "\n--- Pruebas de Booleanos (valor-verdad?) ---\n")
+;;========================================
+;; Pruebas de booleanos
+;;========================================
+(eopl:printf "\n--- Pruebas de booleanos (valor-verdad?) ---\n")
 (eopl:printf "~s\n" (valor-verdad? (numero-val 5)))
 (eopl:printf "~s\n" (valor-verdad? (numero-val 0)))
 (eopl:printf "~s\n" (valor-verdad? (numero-val -1)))
 
+;;========================================
+;; Pruebas condicionales
+;;========================================
 (eopl:printf "\n========================================\n")
-(eopl:printf "pruebas condicionales \n")
+(eopl:printf "Pruebas condicionales \n")
 (eopl:printf "========================================\n\n")
 
-; Prueba 1: Si (2+3) entonces 2 sino 3 finSI → Esperado: 2
-(eopl:printf "1. Si (2+3) entonces 2 sino 3 finSI\n")
-(eopl:printf "   Resultado: ~s\n" 
-  (run (condicional-exp 
-         (primapp-bin-exp (numero-lit 2) '+ (numero-lit 4))
-         (numero-lit 2)
-         (numero-lit 3))))
+(eopl:printf "1. Si (2+4) entonces 2 sino 3 finSI\n")
+(eopl:printf "   Resultado: ~s\n"
+  (run '(Si (2 + 4) entonces 2 sino 3 finSI)))
 
-; Prueba 2: Si (longitud(@d) ~ 4) entonces 2 sino 3 finSI → Esperado: 3
 (eopl:printf "\n2. Si (longitud(@d) ~ 4) entonces 2 sino 3 finSI\n")
 (eopl:printf "   Resultado: ~s\n"
-  (run (condicional-exp
-         (primapp-bin-exp
-           (primapp-un-exp 'longitud (var-exp '@d))
-           '~
-           (numero-lit 4))
-         (numero-lit 2)
-         (numero-lit 3))))
+  (run '(Si ((longitud @d) ~ 4) entonces 2 sino 3 finSI)))
 
+;;========================================
+;; Pruebas variables locales
+;;========================================
 (eopl:printf "\n========================================\n")
-(eopl:printf "pruebas variables locales \n")
+(eopl:printf "Pruebas variables locales \n")
 (eopl:printf "========================================\n\n")
 
-; Prueba 1: declarar (@x=2;@y=3;@a=7) { (@a+(@x~@y)) } → Esperado: 6
-(eopl:printf "1. declarar (@x=2;@y=3;@a=7) { (@a+(@x~~@y)) }\n")
+(eopl:printf "1. declarar (@x=2;@y=3;@a=7) { (@a+(@x ~ @y)) }\n")
 (eopl:printf "   Resultado: ~s\n"
-  (run (variableLocal-exp
-         '(@x @y @a)
-         (list (numero-lit 2) (numero-lit 3) (numero-lit 7))
-         (primapp-bin-exp
-           (var-exp '@a)
-           '+
-           (primapp-bin-exp (var-exp '@x) '~ (var-exp '@y))))))
+  (run '(declarar ((@x = 2) (@y = 3) (@a = 7))
+         (@a + (@x ~ @y)))))
 
-; Prueba 2: declarar (@x=2;@y=3;@a=7) { (@a+@b) } → Esperado: 9
 (eopl:printf "\n2. declarar (@x=2;@y=3;@a=7) { (@a+@b) }\n")
 (eopl:printf "   Resultado: ~s\n"
-  (run (variableLocal-exp
-         '(@x @y @a)
-         (list (numero-lit 2) (numero-lit 3) (numero-lit 7))
-         (primapp-bin-exp (var-exp '@a) '+ (var-exp '@b)))))
+  (run '(declarar ((@x = 2) (@y = 3) (@a = 7))
+         (@a + @b))))
 
-;===============================================================================
-; PRUEBAS PARA RECURSIÓN 
-;===============================================================================
-
+;;========================================
+;; Pruebas recursión (factorial)
+;;========================================
 (eopl:printf "\n========================================\n")
 (eopl:printf "Pruebas de Recursión (Factorial)\n")
 (eopl:printf "========================================\n\n")
 
-;; Prueba 1: Calcular el factorial de 5. Esperado: 120
 (eopl:printf "1. Factorial de 5\n")
 (eopl:printf "   Resultado: ~s\n"
-  (run
-   (letrec-exp
-    '(@factorial) ; Argumento 1: Lista de nombres de procedimientos
-    '((@n))      ; Argumento 2: Lista de listas de parámetros
-    (list        ; Argumento 3: Lista de cuerpos
-     (condicional-exp
-      (var-exp '@n)
-      (primapp-bin-exp
-       (var-exp '@n)
-       '*
-       (app-exp
-        (var-exp '@factorial)
-        (list (primapp-bin-exp (var-exp '@n) '~ (numero-lit 1)))))
-      (numero-lit 1)))
-    (app-exp
-     (var-exp '@factorial)
-     (list (numero-lit 5))))))
+  (run '(letrec ((@factorial (@n) haga
+                   (Si @n
+                       entonces (@n * (evaluar @factorial (@n ~ 1) finEval))
+                       sino 1
+                       finSI)
+                   finProc))
+          (evaluar @factorial 5 finEval))))
 
-;; Prueba 2: Calcular el factorial de 1 (caso base). Esperado: 1
 (eopl:printf "\n2. Factorial de 1\n")
 (eopl:printf "   Resultado: ~s\n"
-  (run
-   (letrec-exp
-    '(@factorial)
-    '((@n))
-    (list
-     (condicional-exp
-      (var-exp '@n)
-      (primapp-bin-exp
-       (var-exp '@n)
-       '*
-       (app-exp
-        (var-exp '@factorial)
-        (list (primapp-bin-exp (var-exp '@n) '~ (numero-lit 1)))))
-      (numero-lit 1)))
-    (app-exp
-     (var-exp '@factorial)
-     (list (numero-lit 1))))))
+  (run '(letrec ((@factorial (@n) haga
+                   (Si @n
+                       entonces (@n * (evaluar @factorial (@n ~ 1) finEval))
+                       sino 1
+                       finSI)
+                   finProc))
+          (evaluar @factorial 1 finEval))))
 
-;===============================================================================
-; PRUEBA DEL ÁREA DE UN CÍRCULO
-;===============================================================================
-
+;;========================================
+;; Área de un círculo
+;;========================================
 (eopl:printf "\n========================================\n")
 (eopl:printf "Prueba de Procedimiento: Área de un Círculo\n")
 (eopl:printf "========================================\n\n")
 
 (eopl:printf "Cálculo del área para un radio de 2.5\n")
 (eopl:printf "   Resultado: ~s\n"
-  (run
-    (variableLocal-exp
-      '(@radio @areaCirculo)
-      (list
-        (numero-lit 2.5)
-        (procedimiento-exp
-          '(@r)
-          (primapp-bin-exp
-            (var-exp '@pi)
-            '*
-            (primapp-bin-exp (var-exp '@r) '* (var-exp '@r)))))
-      (app-exp
-        (var-exp '@areaCirculo)
-        (list (var-exp '@radio))))))
+  (run '(declarar ((@radio = 2.5)
+                   (@areaCirculo = (procedimiento (@r) haga (@pi * (@r * @r)) finProc)))
+          (evaluar @areaCirculo @radio finEval))))
 
-;===============================================================================
-; PRUEBA DE RESTA Y MULTIPLICACIÓN SOLO CON ADD1 y SUB1
-;===============================================================================
-
+;;========================================
+;; Resta y multiplicación solo con ADD1 y SUB1
+;;========================================
 (eopl:printf "\n========================================\n")
-(eopl:printf "9.d) Resta y multiplicación con primitivas mínimas\n")
+(eopl:printf "Resta y multiplicación con primitivas mínimas\n")
 (eopl:printf "========================================\n\n")
 
 (eopl:printf "Cálculo de la resta recursiva para (10, 3):\n")
 (eopl:printf "   Resultado: ~s\n"
-  (run
-    ; Se define @restar de forma recursiva.
-    (letrec-exp
-      '(@restar) ; Nombre del procedimiento
-      '((@a @b))  ; Parámetros que recibe
-      (list
-        ; Cuerpo del procedimiento @restar
-        (condicional-exp
-          (var-exp '@b) ; Condición: si @b no es cero
-          ; Paso Recursivo: llamar a restar(sub1(a), sub1(b))
-          (app-exp
-            (var-exp '@restar)
-            (list
-              (primapp-un-exp 'sub1 (var-exp '@a))
-              (primapp-un-exp 'sub1 (var-exp '@b)) 
-              ))
-          ; Caso Base: si @b es cero, el resultado es @a
-          (var-exp '@a)))
-      ; Llamada: evaluar @restar (10, 3) finEval
-      (app-exp (var-exp '@restar) (list (numero-lit 10) (numero-lit 3))))))
+  (run '(letrec ((@restar (@a @b) haga
+                   (Si @b
+                       entonces (evaluar @restar (sub1 @a) (sub1 @b) finEval)
+                       sino @a
+                       finSI)
+                   finProc))
+          (evaluar @restar 10 3 finEval))))
 
 (eopl:printf "\nCálculo de la multiplicación recursiva para (10, 3):\n")
 (eopl:printf "   Resultado: ~s\n"
-  (run
-    ; Se definen @sumar y @multiplicar juntas, ya que la segunda depende de la primera.
-    (letrec-exp
-      '(@sumar @multiplicar) ; Nombres de los procedimientos
-      '((@x @y) (@a @b))     ; Lista de parámetros para cada uno
-      (list
-        ; ---- Cuerpo del procedimiento @sumar(@x, @y) ----
-        (condicional-exp
-          (var-exp '@y) ; Condición: si @y no es cero
-          ; Paso recursivo: llamar a sumar(add1(x), sub1(y))
-          (app-exp
-            (var-exp '@sumar)
-            (list
-              (primapp-un-exp 'add1 (var-exp '@x))
-              (primapp-un-exp 'sub1 (var-exp '@y))))
-          ; Caso base: si @y es cero, el resultado es @x
-          (var-exp '@x))
+  (run '(letrec ((@sumar (@x @y) haga
+                   (Si @y
+                       entonces (evaluar @sumar (add1 @x) (sub1 @y) finEval)
+                       sino @x
+                       finSI)
+                   finProc)
+                  (@multiplicar (@a @b) haga
+                   (Si @b
+                       entonces (evaluar @sumar @a (evaluar @multiplicar @a (sub1 @b) finEval) finEval)
+                       sino 0
+                       finSI)
+                   finProc))
+          (evaluar @multiplicar 10 3 finEval))))
 
-        ; ---- Cuerpo del procedimiento @multiplicar(@a, @b) ----
-        (condicional-exp
-          (var-exp '@b) ; Condición: si @b no es cero
-          ; Paso recursivo: llamar a sumar(a, multiplicar(a, sub1(b)))
-          (app-exp
-            (var-exp '@sumar) ; Usamos nuestra suma, no la primitiva '+'
-            (list
-              (var-exp '@a)
-              (app-exp
-               (var-exp '@multiplicar)
-               (list (var-exp '@a) (primapp-un-exp 'sub1 (var-exp '@b))))))
-          ; Caso base: si @b es cero, el resultado es 0
-          (numero-lit 0)))
-
-      ; Llamada: evaluar @multiplicar (10, 3) finEval
-      (app-exp (var-exp '@multiplicar) (list (numero-lit 10) (numero-lit 3))))))
-
-;===============================================================================
-; DECORADOR SIMPLE
-;===============================================================================
+;;========================================
+;; Decorador simple
+;;========================================
 (eopl:printf "\n========================================\n")
-(eopl:printf "e) Prueba decorador simple\n")
+(eopl:printf "Prueba decorador simple\n")
 (eopl:printf "========================================\n\n")
 
 (eopl:printf "Resultado: ~s\n"
-  (run
-   ;; Anidamos los 'declarar' para asegurar el orden de definición
-   (variableLocal-exp ; declarar @integrantes = ...
-    '(@integrantes)
-    (list (procedimiento-exp '() (texto-lit "Joel-Allan-Manuel")))
-    (variableLocal-exp ; { declarar @saludar = ...
-     '(@saludar)
-     (list
-      (procedimiento-exp
-       '(@func)
-       (procedimiento-exp
-        '()
-        (primapp-bin-exp
-         (texto-lit "Hola:")
-         'concat
-         (app-exp (var-exp '@func) '())))))
-     (variableLocal-exp ; { declarar @decorate = ...
-      '(@decorate)
-      (list (app-exp (var-exp '@saludar) (list (var-exp '@integrantes))))
-      ;; { evaluar @decorate () }
-      (app-exp (var-exp '@decorate) '()))))))
+  (run '(declarar
+          ((@integrantes = (procedimiento () haga "Joel-Allan-Manuel" finProc))
+           (@saludar = (procedimiento (@func) haga
+                         (procedimiento () haga
+                           ("Hola:" concat (evaluar @func finEval))
+                           finProc)
+                         finProc))
+           (@decorate = (evaluar @saludar @integrantes finEval)))
+          (evaluar @decorate finEval))))
 
-;===============================================================================
-; DECORADOR CON PARÁMETROS
-;===============================================================================
+;;========================================
+;; Decorador con parámetros
+;;========================================
 (eopl:printf "\n========================================\n")
-(eopl:printf "f) Prueba del decorador con parámetros\n")
+(eopl:printf "Prueba decorador con parámetros\n")
 (eopl:printf "========================================\n\n")
 
 (eopl:printf "Resultado: ~s\n"
-  (run
-   (variableLocal-exp
-    '(@integrantes)
-    (list (procedimiento-exp '() (texto-lit "Manuel-Joel-Allan")))
-    (variableLocal-exp
-     '(@saludar)
-     (list
-      (procedimiento-exp
-       '(@func)
-       (procedimiento-exp
-        '(@sufijo)
-        (primapp-bin-exp
-         (primapp-bin-exp
-          (texto-lit "Hola:")
-          'concat
-          (app-exp (var-exp '@func) '()))
-         'concat
-         (var-exp '@sufijo)))))
-     (variableLocal-exp
-      '(@decorate)
-      (list (app-exp (var-exp '@saludar) (list (var-exp '@integrantes))))
-      (app-exp
-       (var-exp '@decorate)
-       (list (texto-lit "-ProfesoresFLP"))))))))
+  (run '(declarar
+          ((@integrantes = (procedimiento () haga "Manuel-Joel-Allan" finProc))
+           (@saludar = (procedimiento (@func) haga
+                         (procedimiento (@sufijo) haga
+                           (("Hola:" concat (evaluar @func finEval)) concat @sufijo)
+                           finProc)
+                         finProc))
+           (@decorate = (evaluar @saludar @integrantes finEval)))
+          (evaluar @decorate "-ProfesoresFLP" finEval))))
